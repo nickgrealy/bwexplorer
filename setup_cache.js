@@ -116,6 +116,9 @@ Walker(basedir).filterDir((dir, stat) => {
                     i.destResolved = i.destination.startsWith('%') ? project.gvs[i.destination.replace(/%/g, '')] : i.destination
                 })
 
+                // sort integrations...
+                project.integrations = project.integrations.sort((a, b) => a.process.localeCompare(b.process))
+
                 // write project files to cache...
                 const filename = project.reldir !== '' ? project.reldir.replace(/\\|\//g, '_') : project.name
                 console.log(`Writing project metadata "${filename}" to cache`)
