@@ -23,6 +23,15 @@ const defer = () => {
     return d
 }
 
+const regexExec = (re, str) => {
+    var match = null
+    var matches = []
+    while ((match = re.exec(str)) !== null) {
+      matches.push(match[1])
+    }
+    return matches
+}
+
 // find BW project dirs...
 const projects = []
 Walker(basedir).filterDir((dir, stat) => {
@@ -46,41 +55,62 @@ Walker(basedir).filterDir((dir, stat) => {
         projects.forEach(project => {
 
             // setup promises...
-            const deferJmsStarters = defer()
+            const deferServiceStarters = defer()
             const deferGlobalVariables = defer()
             const promises = [
-                deferJmsStarters.promise,
+                deferServiceStarters.promise,
                 deferGlobalVariables.promise
             ]
 
             // find starter JMS processes...
             const waitForProcesses = []
             Walker(project.dir).on('file', (file, stat) => {
-                const PD_TYPE = '<pd:type>com.tibco.plugin.jms.JMSQueueEventSource</pd:type>'
+                const JMS_RECV_TYPE = '<pd:type>com.tibco.plugin.jms.JMSQueueEventSource</pd:type>'
                 const DEST_START = '<destination>'
                 const DEST_END = '</destination>'
+                const SOAP_RECV_REGEX = /(?:<httpURI>([^<]+)<\/httpURI>)/g
                 if (file.endsWith('.process')) {
 
                     const deferParseFile = defer()
                     waitForProcesses.push(deferParseFile.promise)
                     fs.readFile(file, 'utf-8').then(data => {
-                        let idx = data.indexOf(PD_TYPE)
+
+                        // search for JMS...
+                        let idx = data.indexOf(JMS_RECV_TYPE)
                         while (idx > -1) {
                             const start = data.indexOf(DEST_START, idx)
                             const end = data.indexOf(DEST_END, start)
+                            const type = 'JMSQueueEventSource'
                             const process = getRelativeDir(file)
-                            const destination = data.substring(start + DEST_START.length, end)
-                            project.integrations.push({ process, destination })
+                            const destinations = [data.substring(start + DEST_START.length, end)]
+                            project.integrations.push({ type, process, destinations })
 
                             // find next (if any)...
-                            idx = data.indexOf(PD_TYPE, end)
+                            idx = data.indexOf(JMS_RECV_TYPE, end)
                         }
                         deferParseFile.resolve()
                     })
+
+                } else if (file.endsWith('.serviceagent')) {
+
+                    const deferParseFile = defer()
+                    waitForProcesses.push(deferParseFile.promise)
+                    fs.readFile(file, 'utf-8').then(data => {
+
+                        // search for SOAP endpoints...
+                        const destinations = regexExec(SOAP_RECV_REGEX, data)
+                        if (destinations.length > 0) {
+                            const type = 'SOAP'
+                            const process = getRelativeDir(file)
+                            project.integrations.push({ type, process, destinations })
+                            deferParseFile.resolve()
+                        }
+                    })
+
                 }
             }).on('end', () => {
                 // console.log(`${project.reldir} - Processes - waiting for ${waitForProcesses.length} promises...`)
-                Promise.all(waitForProcesses).then(() => deferJmsStarters.resolve())
+                Promise.all(waitForProcesses).then(() => deferServiceStarters.resolve())
             })
 
             // find global variables...
@@ -123,11 +153,13 @@ Walker(basedir).filterDir((dir, stat) => {
 
                 // attempt to resolve any JMS queues from the global variables...
                 project.integrations.forEach(i => {
-                    i.destResolved = i.destination.startsWith('%') ? project.gvs[i.destination.replace(/%/g, '')] : i.destination
+                    i.destsResolved = i.destinations.map(d => {
+                        return d.startsWith('%') ? project.gvs[d.replace(/%/g, '')] : d
+                    })
                 })
 
                 // sort integrations...
-                project.integrations = project.integrations.sort((a, b) => a.process.localeCompare(b.process))
+                project.integrations = project.integrations.sort((a, b) => a.type.localeCompare(b.type) || a.process.localeCompare(b.process))
 
                 // write project files to cache...
                 const filename = project.reldir !== '' ? project.reldir.replace(/\\|\//g, '_') : project.name
