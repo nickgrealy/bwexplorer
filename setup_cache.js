@@ -3,7 +3,10 @@
 const path = require('path')
 const fs = require('fs-extra')
 const Walker = require('walker')
-const { parseString } = require('xml2js')
+const { readDotFolder } = require('./src/dotfolder-reader')
+const { readGvs } = require('./src/gv-reader')
+const { readProcesses } = require('./src/process-reader')
+const { defer, regexExec } = require('./src/utils')
 
 const cwd = path.resolve(process.cwd())
 const basedir = path.resolve(cwd, process.argv[process.argv.length - 1])
@@ -14,32 +17,13 @@ console.log(`Used last argument to create base directory: ${basedir}`)
 if (!fs.existsSync(basedir))
     throw Error(`Directory ${basedir} doesn't exist`)
 
-const defer = () => {
-    const d = {}
-    d.promise = new Promise((resolve, reject) => {
-        d.resolve = resolve
-        d.reject = reject
-    })
-    return d
-}
-
-const regexExec = (re, str) => {
-    var match = null
-    var matches = []
-    while ((match = re.exec(str)) !== null) {
-      matches.push(match[1])
-    }
-    return matches
-}
-
 // find BW project dirs...
 const projects = []
-Walker(basedir).filterDir((dir, stat) => {
+Walker(basedir).filterDir(dir => {
         const meta = path.resolve(dir, '.folder')
         if (fs.existsSync(meta)) {
-            const text = fs.readFileSync(meta)
-            if (text.indexOf('resourceType="ae.rootfolder"') !== -1) {
-                const name = /name="([^"]+)"/.exec(text)[1]
+            const name = readDotFolder(meta)
+            if (name !== null) {
                 const reldir = getRelativeDir(dir)
                 projects.push({ name, dir, reldir, gvs: {}, integrations: [] })
                 return false
@@ -54,7 +38,7 @@ Walker(basedir).filterDir((dir, stat) => {
 
         projects.forEach(project => {
 
-            // setup promises...
+            // setup promises...s
             const deferServiceStarters = defer()
             const deferGlobalVariables = defer()
             const promises = [
@@ -62,37 +46,19 @@ Walker(basedir).filterDir((dir, stat) => {
                 deferGlobalVariables.promise
             ]
 
-            // find starter JMS processes...
+            // find integration activities...
             const waitForProcesses = []
-            Walker(project.dir).on('file', (file, stat) => {
-                const JMS_RECV_TYPE = '<pd:type>com.tibco.plugin.jms.JMSQueueEventSource</pd:type>'
-                const DEST_START = '<destination>'
-                const DEST_END = '</destination>'
-                const SOAP_RECV_REGEX = /(?:<httpURI>([^<]+)<\/httpURI>)/g
+            Walker(project.dir).on('file', file => {
+                
                 if (file.endsWith('.process')) {
-
-                    const deferParseFile = defer()
-                    waitForProcesses.push(deferParseFile.promise)
-                    fs.readFile(file, 'utf-8').then(data => {
-
-                        // search for JMS...
-                        let idx = data.indexOf(JMS_RECV_TYPE)
-                        while (idx > -1) {
-                            const start = data.indexOf(DEST_START, idx)
-                            const end = data.indexOf(DEST_END, start)
-                            const type = 'JMSQueueEventSource'
-                            const process = getRelativeDir(file)
-                            const destinations = [data.substring(start + DEST_START.length, end)]
-                            project.integrations.push({ type, process, destinations })
-
-                            // find next (if any)...
-                            idx = data.indexOf(JMS_RECV_TYPE, end)
-                        }
-                        deferParseFile.resolve()
-                    })
+                    const process = getRelativeDir(file)
+                    waitForProcesses.push(readProcesses(file, process).then(activities => {
+                        project.integrations = project.integrations.concat(activities)
+                    }))
 
                 } else if (file.endsWith('.serviceagent')) {
 
+                    const SOAP_RECV_REGEX = /(?:<httpURI>([^<]+)<\/httpURI>)/g
                     const deferParseFile = defer()
                     waitForProcesses.push(deferParseFile.promise)
                     fs.readFile(file, 'utf-8').then(data => {
@@ -100,62 +66,49 @@ Walker(basedir).filterDir((dir, stat) => {
                         // search for SOAP endpoints...
                         const destinations = regexExec(SOAP_RECV_REGEX, data)
                         if (destinations.length > 0) {
-                            const type = 'SOAP'
+                            const type = 'SOAPServiceAgent'
                             const process = getRelativeDir(file)
-                            project.integrations.push({ type, process, destinations })
+                            project.integrations.push({ type, process, destinations, direction: 'IN', starter: true })
                             deferParseFile.resolve()
                         }
                     })
 
                 }
             }).on('end', () => {
-                // console.log(`${project.reldir} - Processes - waiting for ${waitForProcesses.length} promises...`)
                 Promise.all(waitForProcesses).then(() => deferServiceStarters.resolve())
             })
 
             // find global variables...
             const waitForGlobalVariables = []
             const gvsdir = path.resolve(project.dir, 'defaultVars')
-            Walker(gvsdir).on('file', (file, stat) => {
+            Walker(gvsdir).on('file', file => {
                     let prefix = path.dirname(file).split(gvsdir).pop().replace(/\\/g, '/') + '/'
                     if (prefix.startsWith('/'))
                         prefix = prefix.substring(1)
 
-                    const deferParseFile = defer()
-                    waitForGlobalVariables.push(deferParseFile.promise)
-                    fs.readFile(file)
-                        .then(data => {
-                            // after read file, parse xml to json...
-                            parseString(data, function(err, result) {
-                                if (err)
-                                    return new Error(err)
-                                const gvs = result.repository.globalVariables[0].globalVariable.reduce((prev, curr) => {
-                                    prev[prefix + curr.name[0]] = curr.value[0]
-                                    return prev
-                                }, {})
-                                Object.assign(project.gvs, gvs)
-                                deferParseFile.resolve()
-                            });
-                        })
-                    }).on('end', () => {
-                        // console.log(`${project.reldir} - GVs - waiting for ${waitForGlobalVariables.length} promises...`)
-                        Promise.all(waitForGlobalVariables).then(() => {
-                            // sort the gvs...
-                            const sorted = {}
-                            Object.keys(project.gvs).sort().forEach(k => sorted[k] = project.gvs[k])
-                            project.gvs = sorted
-                            deferGlobalVariables.resolve()
-                        })
+                    waitForGlobalVariables.push(readGvs(file, prefix).then(gvs => {
+                        Object.assign(project.gvs, gvs)
+                    }))
+
+                }).on('end', () => {
+                    Promise.all(waitForGlobalVariables).then(() => {
+                        // sort the gvs...
+                        const sorted = {}
+                        Object.keys(project.gvs).sort().forEach(k => sorted[k] = project.gvs[k])
+                        project.gvs = sorted
+                        deferGlobalVariables.resolve()
                     })
+                })
                     
-            // console.log(`${project.reldir} - Final - waiting for ${promises.length} promises...`)
             Promise.all(promises).then(() => {
 
                 // attempt to resolve any JMS queues from the global variables...
                 project.integrations.forEach(i => {
-                    i.destsResolved = i.destinations.map(d => {
-                        return d.startsWith('%') ? project.gvs[d.replace(/%/g, '')] : d
-                    })
+                    if (i.destinations) {
+                        i.destsResolved = i.destinations.map(d => {
+                            return d.startsWith('%') ? project.gvs[d.replace(/%/g, '')] : d
+                        })
+                    }
                 })
 
                 // sort integrations...
