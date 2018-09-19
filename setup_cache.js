@@ -54,6 +54,7 @@ Walker(basedir).filterDir((dir, stat) => {
             ]
 
             // find starter JMS processes...
+            const waitForProcesses = []
             Walker(project.dir).on('file', (file, stat) => {
                 const PD_TYPE = '<pd:type>com.tibco.plugin.jms.JMSQueueEventSource</pd:type>'
                 const DEST_START = '<destination>'
@@ -61,7 +62,7 @@ Walker(basedir).filterDir((dir, stat) => {
                 if (file.endsWith('.process')) {
 
                     const deferParseFile = defer()
-                    promises.push(deferParseFile.promise)
+                    waitForProcesses.push(deferParseFile.promise)
                     fs.readFile(file, 'utf-8').then(data => {
                         let idx = data.indexOf(PD_TYPE)
                         while (idx > -1) {
@@ -77,9 +78,13 @@ Walker(basedir).filterDir((dir, stat) => {
                         deferParseFile.resolve()
                     })
                 }
-            }).on('end', () => deferJmsStarters.resolve())
+            }).on('end', () => {
+                // console.log(`${project.reldir} - Processes - waiting for ${waitForProcesses.length} promises...`)
+                Promise.all(waitForProcesses).then(() => deferJmsStarters.resolve())
+            })
 
             // find global variables...
+            const waitForGlobalVariables = []
             const gvsdir = path.resolve(project.dir, 'defaultVars')
             Walker(gvsdir).on('file', (file, stat) => {
                     let prefix = path.dirname(file).split(gvsdir).pop().replace(/\\/g, '/') + '/'
@@ -87,9 +92,10 @@ Walker(basedir).filterDir((dir, stat) => {
                         prefix = prefix.substring(1)
 
                     const deferParseFile = defer()
-                    promises.push(deferParseFile.promise)
+                    waitForGlobalVariables.push(deferParseFile.promise)
                     fs.readFile(file)
                         .then(data => {
+                            // after read file, parse xml to json...
                             parseString(data, function(err, result) {
                                 if (err)
                                     return new Error(err)
@@ -102,13 +108,17 @@ Walker(basedir).filterDir((dir, stat) => {
                             });
                         })
                     }).on('end', () => {
-                        // sort the gvs...
-                        const sorted = new Map()
-                        Object.keys(project.gvs).sort().forEach(k => sorted.set(k, project.gvs[k]))
-                        project.gvs = sorted
-                        deferGlobalVariables.resolve()
+                        // console.log(`${project.reldir} - GVs - waiting for ${waitForGlobalVariables.length} promises...`)
+                        Promise.all(waitForGlobalVariables).then(() => {
+                            // sort the gvs...
+                            const sorted = {}
+                            Object.keys(project.gvs).sort().forEach(k => sorted[k] = project.gvs[k])
+                            project.gvs = sorted
+                            deferGlobalVariables.resolve()
+                        })
                     })
                     
+            // console.log(`${project.reldir} - Final - waiting for ${promises.length} promises...`)
             Promise.all(promises).then(() => {
 
                 // attempt to resolve any JMS queues from the global variables...
