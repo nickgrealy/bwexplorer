@@ -3,6 +3,7 @@
 const path = require('path')
 const fs = require('fs-extra')
 const Walker = require('walker')
+const writeHtml = require('./src/generate-html')
 const { readDotFolder } = require('./src/dotfolder-reader')
 const { readGvs } = require('./src/gv-reader')
 const { readProcesses } = require('./src/process-reader')
@@ -117,11 +118,14 @@ Walker(basedir).filterDir(dir => {
                 // write project files to cache...
                 const filename = project.reldir !== '' ? project.reldir.replace(/\\|\//g, '_') : project.name
                 console.log(`Writing project metadata "${filename}" to cache`)
-                const cache = path.resolve(cacheDir, `${filename}.json`)
-                if (fs.existsSync(cache))
-                    console.log(`Error: cache already exists! ${cache}`)
-                else
-                    fs.writeJson(cache, project, { spaces: 2 })
+                const cacheFile = path.resolve(cacheDir, `${filename}.json`)
+                const htmlFile = path.resolve(cacheDir, `${filename}.html`)
+                if (fs.existsSync(cacheFile)) {
+                    console.log(`Error: cache already exists! ${cacheFile}`)
+                } else {
+                    fs.writeJson(cacheFile, project, { spaces: 2 })
+                    writeHtml(htmlFile, project)
+                }
             })
         })
     })

@@ -1,0 +1,44 @@
+doctype html
+html(lang="en")
+  head
+    title= name
+    style 
+        | body{font-family:Arial;}
+        | table,tr,th,td{border:1px solid grey;border-collapse:collapse;}
+        | th,td{padding:5px 15px;}
+        | th{background:PaleTurquoise;cursor:pointer;}
+        | td{font-family:"Courier New", Courier, monospace;}
+        | .center{text-align:center;}
+        | .upper{text-transform:uppercase;}
+  body
+    h1= name
+    table
+        tr
+            th Process
+            th Type
+            th Starter
+            th Direction
+            th Destinations
+
+        for i in integrations
+            tr
+                td= i.process
+                td= i.type
+                td.center.upper= i.starter
+                td.center= i.direction
+                td.center= i.destsResolved
+ 
+    script
+        | const getCellValue = (tr, idx) => tr.children[idx].innerText || tr.children[idx].textContent;
+        | 
+        | const comparer = (idx, asc) => (a, b) => ((v1, v2) => 
+        |     v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
+        |     )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+        | 
+        | // do the work...
+        | document.querySelectorAll('th').forEach(th => th.addEventListener('click', (() => {
+        |     const table = th.closest('table');
+        |     Array.from(table.querySelectorAll('tr:nth-child(n+2)'))
+        |         .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
+        |         .forEach(tr => table.appendChild(tr) );
+        | })));
